@@ -135,7 +135,7 @@ trampoline (int sig)
 
   asm (
        "\t.text\n"
-       #if _WIN32 || __CYGWIN__ || __MACH__
+       #if ((_WIN32 || __CYGWIN__) && !defined(_WIN64)) || __MACH__
        "\t.globl _coro_transfer\n"
        "_coro_transfer:\n"
        #else
@@ -148,7 +148,7 @@ trampoline (int sig)
 
          #if _WIN32 || __CYGWIN__
            #define NUM_SAVED 29
-           "\tsubq $168, %rsp\t" /* one dummy qword to improve alignment */
+           "\tsubq $168, %rsp\n" /* one dummy qword to improve alignment */
            "\tmovaps %xmm6, (%rsp)\n"
            "\tmovaps %xmm7, 16(%rsp)\n"
            "\tmovaps %xmm8, 32(%rsp)\n"
@@ -527,8 +527,8 @@ coro_init (void *args_)
 
   /* we try to be good citizens and use deferred cancellation and cleanup handlers */
   pthread_cleanup_push (mutex_unlock_wrapper, &coro_mutex);
-    coro_transfer (args->self, args->main);
-    func (arg);
+  coro_transfer (args->self, args->main);
+  func (arg);
   pthread_cleanup_pop (1);
 
   return 0;

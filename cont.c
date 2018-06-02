@@ -28,7 +28,7 @@
 
 /*
   Enable this include to make fiber yield/resume about twice as fast.
-  
+
   # Without libcoro
   koyoko% ./build/bin/ruby ./fiber_benchmark.rb 10000 1000
   setup time for 10000 fibers:   0.099961
@@ -40,9 +40,18 @@
   execution time for 1000 messages:   8.491746
 */
 
+#if defined __GNUC__
 #define FIBER_USE_LIBCORO
+#endif
 
 #ifdef FIBER_USE_LIBCORO
+#if defined __GNUC__
+# define asm __asm__		/* for -std=iso9899:1999 */
+#endif
+#if defined _WIN32
+# define WINDOWS
+#endif
+NORETURN(static void coro_init(void));
 #include "libcoro/coro.c"
 #define FIBER_USE_NATIVE 1
 #endif
@@ -187,7 +196,7 @@ struct rb_fiber_struct {
 #if FIBER_USE_NATIVE
 #if defined(CORO_H)
     coro_context context;
-    //struct coro_stack stack;
+    /*struct coro_stack stack;*/
     void *ss_sp;
     size_t ss_size;
 #elif defined(_WIN32)
@@ -363,14 +372,14 @@ cont_free(void *ptr)
 	/* fiber */
 	const rb_fiber_t *fib = (rb_fiber_t*)cont;
 #if defined(CORO_H)
-    coro_destroy(&fib->context);
-    if (fib->ss_sp != NULL) {
-        if (cont->type == ROOT_FIBER_CONTEXT) {
-      rb_bug("Illegal root fiber parameter");
-        }
-        munmap((void*)fib->ss_sp, fib->ss_size);
-    }
-    //coro_stack_free(&fib->stack);
+	coro_destroy(&fib->context);
+	if (fib->ss_sp != NULL) {
+	    if (cont->type == ROOT_FIBER_CONTEXT) {
+		rb_bug("Illegal root fiber parameter");
+	    }
+	    munmap((void*)fib->ss_sp, fib->ss_size);
+	}
+	/*coro_stack_free(&fib->stack);*/
 #elif defined(_WIN32)
 	if (cont->type != ROOT_FIBER_CONTEXT) {
 	    /* don't delete root fiber handle */
@@ -793,6 +802,13 @@ fiber_entry(void *arg)
 }
 #else /* _WIN32 */
 
+NORETURN(static void fiber_entry(void *arg));
+static void
+fiber_entry(void *arg)
+{
+    rb_fiber_start();
+}
+
 /*
  * FreeBSD require a first (i.e. addr) argument of mmap(2) is not NULL
  * if MAP_STACK is passed.
@@ -854,8 +870,8 @@ fiber_initialize_machine_stack_context(rb_fiber_t *fib, size_t size)
     fib->ss_sp = ptr;
     fib->ss_size = size;
 
-    //coro_stack_alloc(&fib->stack, size);
-    coro_create(&fib->context, rb_fiber_start, NULL, fib->ss_sp, fib->ss_size);
+    /*coro_stack_alloc(&fib->stack, size);*/
+    coro_create(&fib->context, fiber_entry, NULL, fib->ss_sp, fib->ss_size);
     sec->machine.stack_start = (VALUE*)(ptr + STACK_DIR_UPPER(0, size));
     sec->machine.stack_maxsize = size - RB_PAGE_SIZE;
 #elif defined(_WIN32)
@@ -1793,7 +1809,7 @@ rb_fiber_terminate(rb_fiber_t *fib, int need_interrupt)
 #if FIBER_USE_NATIVE
 #if defined(CORO_H)
     coro_destroy(&fib->context);
-    //coro_stack_free(&fib->stack);
+    /*coro_stack_free(&fib->stack);*/
     terminated_machine_stack.ptr = fib->ss_sp;
     terminated_machine_stack.size = fib->ss_size / sizeof(VALUE);
     fib->ss_sp = NULL;
