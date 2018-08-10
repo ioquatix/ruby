@@ -10,28 +10,28 @@ def make_link(previous)
   end
 end
 
-def make_chain
-  chain = Fiber.new do
-    while true
-      Fiber.yield(message)
-    end
-  end
+def make_chain(length, &block)
+  chain = Fiber.new(&block)
   
-  (fibers - 1).times do
+  (length - 1).times do
     chain = make_link(chain)
   end
   
   return chain
 end
 
-def run_benchmark(fibers, repeats, message = :hello)
+def run_benchmark(length, repeats, message = :hello)
   chain = nil
   
   time = Benchmark.realtime do
-    chain = make_chain
+    chain = make_chain(length) do
+      while true
+        Fiber.yield(message)
+      end
+    end
   end
   
-  puts "Creating #{fibers} fibers took #{time}..."
+  puts "Creating #{length} fibers took #{time}..."
   
   time = Benchmark.realtime do
     repeats.times do
