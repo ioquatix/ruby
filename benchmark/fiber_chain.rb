@@ -10,23 +10,23 @@ end
 
 def make_chain(length, &block)
   chain = Fiber.new(&block)
-  
+
   (length - 1).times do
     chain = make_link(chain)
   end
-  
+
   return chain
 end
 
 def run_benchmark(length, repeats, message = :hello)
   chain = nil
-  
+
   chain = make_chain(length) do
     while true
       Fiber.yield(message)
     end
   end
-  
+
   repeats.times do
     abort "invalid result" unless chain.resume == message
   end
