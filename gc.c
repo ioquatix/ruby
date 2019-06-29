@@ -4687,7 +4687,6 @@ mark_current_machine_context(rb_objspace_t *objspace, rb_execution_context_t *ec
     } save_regs_gc_mark;
     VALUE *stack_start, *stack_end;
 
-    FLUSH_REGISTER_WINDOWS;
     memset(&save_regs_gc_mark, 0, sizeof(save_regs_gc_mark));
     /* This assumes that all registers are saved into the jmp_buf (and stack) */
     rb_setjmp(save_regs_gc_mark.j);

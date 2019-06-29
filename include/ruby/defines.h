@@ -398,13 +398,6 @@ ruby_xrealloc2_with_location(void *ptr, size_t s1, size_t s2, const char *file, 
         /* MB_CUR_MAX will not work well in C locale */
 #endif
 
-#if defined(__sparc)
-void rb_sparc_flush_register_windows(void);
-#  define FLUSH_REGISTER_WINDOWS rb_sparc_flush_register_windows()
-#else
-#  define FLUSH_REGISTER_WINDOWS ((void)0)
-#endif
-
 #if defined(DOSISH)
 #define PATH_SEP ";"
 #else

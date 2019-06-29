@@ -150,7 +150,6 @@ static inline void blocking_region_end(rb_thread_t *th, struct rb_blocking_regio
 
 #define RB_GC_SAVE_MACHINE_CONTEXT(th)				\
     do {							\
-	FLUSH_REGISTER_WINDOWS;					\
 	setjmp((th)->ec->machine.regs);				\
 	SET_MACHINE_STACK_END(&(th)->ec->machine.stack_end);	\
     } while (0)

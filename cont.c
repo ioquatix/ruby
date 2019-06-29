@@ -587,7 +587,6 @@ cont_save_machine_stack(rb_thread_t *th, rb_context_t *cont)
 	cont->machine.stack = ALLOC_N(VALUE, size);
     }
 
-    FLUSH_REGISTER_WINDOWS;
     MEMCPY(cont->machine.stack, cont->machine.stack_src, VALUE, size);
 }
 
@@ -1008,7 +1007,6 @@ cont_restore_1(rb_context_t *cont)
     }
 #endif
     if (cont->machine.stack_src) {
-	FLUSH_REGISTER_WINDOWS;
 	MEMCPY(cont->machine.stack_src, cont->machine.stack,
 		VALUE, cont->machine.stack_size);
     }
