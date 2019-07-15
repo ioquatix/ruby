@@ -22,7 +22,7 @@
 #include <sys/mman.h>
 #endif
 
-static const int DEBUG = 0;
+static const int DEBUG = 1;
 
 #define RB_PAGE_SIZE (pagesize)
 #define RB_PAGE_MASK (~(RB_PAGE_SIZE - 1))
@@ -540,7 +540,7 @@ fiber_pool_stack_acquire(struct fiber_pool * fiber_pool) {
 static inline void
 fiber_pool_stack_free(struct fiber_pool_stack * stack) {
     void * base = fiber_pool_stack_base(stack);
-    size_t size = stack->available - RB_PAGE_SIZE;
+    size_t size = stack->available;
 
     if (DEBUG) fprintf(stderr, "fiber_pool_stack_free: %p+%zu [base=%p, size=%zu]\n", base, size, stack->base, stack->size);
 
@@ -559,26 +559,28 @@ fiber_pool_stack_free(struct fiber_pool_stack * stack) {
 
 // Release and return a stack to the vacancy list.
 static void
-fiber_pool_stack_release(struct fiber_pool_stack stack) {
-    struct fiber_pool_vacancy * vacancy = fiber_pool_vacancy_pointer(stack.base, stack.size);
+fiber_pool_stack_release(struct fiber_pool_stack * stack) {
+    struct fiber_pool_vacancy * vacancy = fiber_pool_vacancy_pointer(stack->base, stack->size);
+
+    if (DEBUG) fprintf(stderr, "fiber_pool_stack_release: %p used=%zu\n", stack->base, stack->pool->used);
 
     // Copy the stack details into the vacancy area:
-    vacancy->stack = stack;
+    vacancy->stack = *stack;
+
+    // Reset the stack pointers and reserve space for the vacancy data:
     fiber_pool_vacancy_reset(vacancy);
 
-    stack.pool->vacancies = fiber_pool_vacancy_push(vacancy, stack.pool->vacancies);
+    // Push the vacancy into the vancancies list:
+    stack->pool->vacancies = fiber_pool_vacancy_push(vacancy, stack->pool->vacancies);
+    stack->pool->used -= 1;
+    stack->allocation->used -= 1;
 
-    stack.pool->used -= 1;
-
-    stack.allocation->used -= 1;
-
-    if (stack.allocation->used == 0) {
-        fiber_pool_allocation_free(stack.allocation);
+    // Release address space and/or dirty memory:
+    if (stack->allocation->used == 0) {
+        fiber_pool_allocation_free(stack->allocation);
     } else {
-        fiber_pool_stack_free(&vacancy->stack);
+        // fiber_pool_stack_free(stack);
     }
-
-    if (DEBUG) fprintf(stderr, "fiber_pool_stack_release: %p used=%zu\n", stack.base, stack.pool->used);
 }
 
 static COROUTINE
@@ -629,8 +631,11 @@ fiber_stack_release(rb_fiber_t * fiber)
 {
     rb_execution_context_t *ec = &fiber->cont.saved_ec;
 
+    if (DEBUG) fprintf(stderr, "fiber_stack_release: %p, stack.base=%p\n", fiber, fiber->stack.base);
+
+    // Return the stack back to the fiber pool if it wasn't already:
     if (fiber->stack.base) {
-        fiber_pool_stack_release(fiber->stack);
+        fiber_pool_stack_release(&fiber->stack);
         fiber->stack.base = NULL;
     }
 
@@ -813,14 +818,8 @@ cont_free(void *ptr)
     } else {
         rb_fiber_t *fiber = (rb_fiber_t*)cont;
         coroutine_destroy(&fiber->context);
-        if (fiber->stack.base != NULL) {
-            if (fiber_is_root_p(fiber)) {
-                rb_bug("Illegal root fiber parameter");
-            }
-            if (fiber->stack.base) {
-                fiber_pool_stack_release(fiber->stack);
-                fiber->stack.base = NULL;
-            }
+        if (!fiber_is_root_p(fiber)) {
+            fiber_stack_release(fiber);
         }
     }
 
@@ -909,11 +908,11 @@ fiber_free(void *ptr)
     rb_fiber_t *fiber = ptr;
     RUBY_FREE_ENTER("fiber");
 
+    if (DEBUG) fprintf(stderr, "fiber_free: %p[%p]\n", fiber, fiber->stack.base);
+
     if (fiber->cont.saved_ec.local_storage) {
         st_free_table(fiber->cont.saved_ec.local_storage);
     }
-
-    fiber_stack_release(fiber);
 
     cont_free(&fiber->cont);
     RUBY_FREE_LEAVE("fiber");
@@ -1189,7 +1188,7 @@ fiber_setcontext(rb_fiber_t *new_fiber, rb_fiber_t *old_fiber)
 {
     rb_thread_t *th = GET_THREAD();
 
-    /* save old_fiber's machine stack - to ensure efficienct garbage collection */
+    /* save old_fiber's machine stack - to ensure efficient garbage collection */
     if (!FIBER_TERMINATED_P(old_fiber)) {
         STACK_GROW_DIR_DETECTION;
         SET_MACHINE_STACK_END(&th->ec->machine.stack_end);
@@ -1212,8 +1211,13 @@ fiber_setcontext(rb_fiber_t *new_fiber, rb_fiber_t *old_fiber)
     /* restore thread context */
     fiber_restore_thread(th, new_fiber);
 
+    if (DEBUG) fprintf(stderr, "fiber_setcontext: %p[%p] -> %p[%p]\n", old_fiber, old_fiber->stack.base, new_fiber, new_fiber->stack.base);
+
     /* swap machine context */
     coroutine_transfer(&old_fiber->context, &new_fiber->context);
+
+    // It's possible to get here, and new_fiber is already trashed.
+    if (DEBUG) fprintf(stderr, "fiber_setcontext: %p[%p] <- %p[%p]\n", old_fiber, old_fiber->stack.base, new_fiber, new_fiber->stack.base);
 }
 
 NOINLINE(NORETURN(static void cont_restore_1(rb_context_t *)));
@@ -1863,10 +1867,6 @@ fiber_store(rb_fiber_t *next_fiber, rb_thread_t *th)
     fiber_status_set(next_fiber, FIBER_RESUMED);
     fiber_setcontext(next_fiber, fiber);
 
-    if (FIBER_TERMINATED_P(next_fiber)) {
-        fiber_stack_release(next_fiber);
-    }
-
     fiber = th->ec->fiber_ptr;
 
     /* Raise an exception if that was the result of executing the fiber */
@@ -1929,7 +1929,13 @@ fiber_switch(rb_fiber_t *fiber, int argc, const VALUE *argv, int is_resume)
 
     cont->argc = argc;
     cont->value = make_passing_arg(argc, argv);
+
     value = fiber_store(fiber, th);
+
+    if (is_resume && FIBER_TERMINATED_P(fiber)) {
+        fiber_stack_release(fiber);
+    }
+
     RUBY_VM_CHECK_INTS(th->ec);
 
     EXEC_EVENT_HOOK(th->ec, RUBY_EVENT_FIBER_SWITCH, th->self, 0, 0, 0, Qnil);
