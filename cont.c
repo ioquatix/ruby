@@ -169,6 +169,9 @@ struct fiber_pool {
     // Whether to madvise(free) the stack or not:
     int free_stacks;
 
+    // Whether to mprotect stacks when fiber is not in use:
+    int protect_stacks;
+
     // The number of stacks that have been used in this pool.
     size_t used;
 
@@ -524,6 +527,7 @@ fiber_pool_initialize(struct fiber_pool * fiber_pool, size_t size, size_t count,
     fiber_pool->count = 0;
     fiber_pool->initial_count = count;
     fiber_pool->free_stacks = 1;
+    fiber_pool->protect_stacks = 0;
     fiber_pool->used = 0;
 
     fiber_pool->vm_stack_size = vm_stack_size;
@@ -2016,7 +2020,20 @@ fiber_switch(rb_fiber_t *fiber, int argc, const VALUE *argv, int is_resume)
     cont->argc = argc;
     cont->value = make_passing_arg(argc, argv);
 
+    struct fiber_pool_stack * stack = &fiber->stack;
+
+    if (stack->pool->protect_stacks) {
+        void * base = fiber_pool_stack_base(stack);
+        mprotect(base, stack->size, PROT_READ | PROT_WRITE);
+    }
+
     value = fiber_store(fiber, th);
+
+    if (stack->pool->protect_stacks && fiber->prev) {
+        struct fiber_pool_stack * previous_stack = &fiber->prev->stack;
+        void * base = fiber_pool_stack_base(previous_stack);
+        mprotect(base, previous_stack->size, PROT_READ);
+    }
 
     if (is_resume && FIBER_TERMINATED_P(fiber)) {
         fiber_stack_release(fiber);
@@ -2382,6 +2399,11 @@ Init_Cont(void)
     char * fiber_shared_fiber_pool_free_stacks = getenv("RUBY_SHARED_FIBER_POOL_FREE_STACKS");
     if (fiber_shared_fiber_pool_free_stacks) {
         shared_fiber_pool.free_stacks = atoi(fiber_shared_fiber_pool_free_stacks);
+    }
+
+    char * fiber_shared_fiber_pool_protect_stacks = getenv("RUBY_SHARED_FIBER_POOL_PROTECT_STACKS");
+    if (fiber_shared_fiber_pool_protect_stacks) {
+        shared_fiber_pool.protect_stacks = atoi(fiber_shared_fiber_pool_protect_stacks);
     }
 
     rb_cFiber = rb_define_class("Fiber", rb_cObject);
