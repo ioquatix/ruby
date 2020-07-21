@@ -5270,6 +5270,39 @@ rb_thread_backtrace_locations_m(int argc, VALUE *argv, VALUE thval)
  *     ThreadError: stopping only thread
  *     note: use sleep to stop forever
  */
+volatile VALUE gv, gv2;
+pthread_key_t key;
+__thread volatile VALUE tv;
+
+static VALUE
+tls_test_pthread_getspecific(VALUE self, VALUE num)
+{
+    int n = NUM2INT(num);
+    for (int i=0; i<n; i++) {
+        gv = (VALUE)pthread_getspecific(key);
+    }
+    return Qnil;
+}
+
+static VALUE
+tls_test___thread(VALUE self, VALUE num)
+{
+    int n = NUM2INT(num);
+    for (int i=0; i<n; i++) {
+        gv = tv;
+    }
+    return Qnil;
+}
+
+static VALUE
+tls_test_gv2gv(VALUE self, VALUE num)
+{
+    int n = NUM2INT(num);
+    for (int i=0; i<n; i++) {
+        gv = gv2;
+    }
+    return Qnil;
+}
 
 void
 Init_Thread(void)
@@ -5285,6 +5318,12 @@ Init_Thread(void)
     sym_on_blocking = ID2SYM(rb_intern("on_blocking"));
 
     id_wait_for_single_fd = rb_intern("wait_for_single_fd");
+
+    rb_define_method(rb_cThread, "tls_test_pthread_getspecific", tls_test_pthread_getspecific, 1);
+    rb_define_method(rb_cThread, "tls_test___thread", tls_test___thread, 1);
+    rb_define_method(rb_cThread, "tls_test_gv2gv", tls_test_gv2gv, 1);
+
+    pthread_key_create(&key, NULL);
 
     rb_define_singleton_method(rb_cThread, "new", thread_s_new, -1);
     rb_define_singleton_method(rb_cThread, "start", thread_start, -2);
