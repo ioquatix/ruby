@@ -1305,7 +1305,7 @@ sock_s_getnameinfo(int argc, VALUE *argv, VALUE _)
 	hints.ai_socktype = (fl & NI_DGRAM) ? SOCK_DGRAM : SOCK_STREAM;
 	/* af */
         hints.ai_family = NIL_P(af) ? PF_UNSPEC : rsock_family_arg(af);
-	error = rb_getaddrinfo(hptr, pptr, &hints, &res);
+	error = rb_getaddrinfo(host, hptr, pptr, &hints, &res);
 	if (error) goto error_exit_addr;
 	sap = res->ai->ai_addr;
         salen = res->ai->ai_addrlen;
