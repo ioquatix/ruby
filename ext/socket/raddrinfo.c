@@ -332,8 +332,8 @@ rb_schedule_getaddrinfo(VALUE scheduler, VALUE host, const char *service,
     }
 }
 
-int
-rb_getaddrinfo(VALUE host, const char *node, const char *service,
+static int
+rb_getaddrinfo(const char *node, const char *service,
                const struct addrinfo *hints,
                struct rb_addrinfo **res)
 {
