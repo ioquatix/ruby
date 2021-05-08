@@ -681,39 +681,55 @@ accept_blocking(void *data)
     return (VALUE)cloexec_accept(arg->fd, arg->sockaddr, arg->len);
 }
 
-VALUE
-rsock_s_accept(VALUE klass, int fd, struct sockaddr *sockaddr, socklen_t *len)
-{
-    int fd2;
-    int retry = 0;
-    struct accept_arg arg;
+static int
+io_wait(VALUE io, rb_io_event_t events, VALUE timeout) {
+  VALUE result = rb_io_wait(io, RB_INT2NUM(events), timeout);
 
-    arg.fd = fd;
-    arg.sockaddr = sockaddr;
-    arg.len = len;
+  return RB_NUM2INT(result) & events;
+}
+
+VALUE
+rsock_s_accept(VALUE klass, VALUE io, struct sockaddr *sockaddr, socklen_t *len)
+{
+    rb_io_t *fptr = NULL;
+    RB_IO_POINTER(io, fptr);
+
+    struct accept_arg accept_arg = {
+      .fd = fptr->fd,
+      .sockaddr = sockaddr,
+      .len = len
+    };
+
+    int retry = 0;
+
   retry:
-    rsock_maybe_wait_fd(fd);
-    fd2 = (int)BLOCKING_REGION_FD(accept_blocking, &arg);
-    if (fd2 < 0) {
-	int e = errno;
-	switch (e) {
-	  case EMFILE:
-	  case ENFILE:
-	  case ENOMEM:
-	    if (retry) break;
-	    rb_gc();
-	    retry = 1;
-	    goto retry;
-	  default:
-	    if (!rb_io_wait_readable(fd)) break;
-	    retry = 0;
-	    goto retry;
-	}
-	rb_syserr_fail(e, "accept(2)");
+    rsock_maybe_wait_fd(accept_arg.fd);
+    int peer = (int)BLOCKING_REGION_FD(accept_blocking, &accept_arg);
+    if (peer < 0) {
+        int error = errno;
+
+        switch (error) {
+          case EMFILE:
+          case ENFILE:
+          case ENOMEM:
+            if (retry) break;
+            rb_gc();
+            retry = 1;
+            goto retry;
+          default:
+            if (!io_wait(io, RUBY_IO_READABLE, Qnil)) break;
+            retry = 0;
+            goto retry;
+        }
+
+        rb_syserr_fail(error, "accept(2)");
     }
-    rb_update_max_fd(fd2);
-    if (!klass) return INT2NUM(fd2);
-    return rsock_init_sock(rb_obj_alloc(klass), fd2);
+
+    rb_update_max_fd(peer);
+
+    if (!klass) return INT2NUM(peer);
+
+    return rsock_init_sock(rb_obj_alloc(klass), peer);
 }
 
 int
