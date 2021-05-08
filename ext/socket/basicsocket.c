@@ -519,6 +519,12 @@ bsock_remote_address(VALUE sock)
     return rsock_fd_socket_addrinfo(fptr->fd, &buf.addr, len);
 }
 
+static int
+io_wait_writable(VALUE io) {
+  VALUE result = rb_io_wait(io, RUBY_IO_WRITABLE, Qnil);
+  return RB_NUM2INT(result) & RUBY_IO_WRITABLE;
+}
+
 /*
  * call-seq:
  *   basicsocket.send(mesg, flags [, dest_sockaddr]) => numbytes_sent
@@ -566,7 +572,7 @@ rsock_bsock_send(int argc, VALUE *argv, VALUE sock)
     arg.flags = NUM2INT(flags);
     while (rsock_maybe_fd_writable(arg.fd),
 	   (n = (ssize_t)BLOCKING_REGION_FD(func, &arg)) < 0) {
-	if (rb_io_wait_writable(arg.fd)) {
+	if (io_wait_writable(sock)) {
 	    continue;
 	}
 	rb_sys_fail(funcname);

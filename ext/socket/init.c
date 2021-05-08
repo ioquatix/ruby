@@ -165,8 +165,15 @@ recvfrom_locktmp(VALUE v)
     return rb_thread_io_blocking_region(recvfrom_blocking, arg, arg->fd);
 }
 
+static int
+io_wait(VALUE io, rb_io_event_t events, VALUE timeout) {
+  VALUE result = rb_io_wait(io, RB_INT2NUM(events), timeout);
+
+  return RB_NUM2INT(result) & events;
+}
+
 VALUE
-rsock_s_recvfrom(VALUE sock, int argc, VALUE *argv, enum sock_recv_type from)
+rsock_s_recvfrom(VALUE socket, int argc, VALUE *argv, enum sock_recv_type from)
 {
     rb_io_t *fptr;
     VALUE str;
@@ -177,27 +184,35 @@ rsock_s_recvfrom(VALUE sock, int argc, VALUE *argv, enum sock_recv_type from)
 
     rb_scan_args(argc, argv, "12", &len, &flg, &str);
 
-    if (flg == Qnil) arg.flags = 0;
-    else             arg.flags = NUM2INT(flg);
+    if (flg == Qnil)
+        arg.flags = 0;
+    else
+        arg.flags = NUM2INT(flg);
+
     buflen = NUM2INT(len);
     str = rsock_strbuf(str, buflen);
 
-    GetOpenFile(sock, fptr);
+    RB_IO_POINTER(socket, fptr);
+
     if (rb_io_read_pending(fptr)) {
-	rb_raise(rb_eIOError, "recv for buffered IO");
+        rb_raise(rb_eIOError, "recv for buffered IO");
     }
+
     arg.fd = fptr->fd;
     arg.alen = (socklen_t)sizeof(arg.buf);
     arg.str = str;
     arg.length = buflen;
 
-    while (rb_io_check_closed(fptr),
-	   rsock_maybe_wait_fd(arg.fd),
-	   (slen = (long)rb_str_locktmp_ensure(str, recvfrom_locktmp,
-	                                       (VALUE)&arg)) < 0) {
-        if (!rb_io_wait_readable(fptr->fd)) {
+    while (true) {
+        rb_io_check_closed(fptr);
+        rsock_maybe_wait_fd(arg.fd);
+
+        slen = (long)rb_str_locktmp_ensure(str, recvfrom_locktmp, (VALUE)&arg);
+
+        if (slen >= 0) break;
+
+        if (!io_wait(socket, RUBY_IO_READABLE, Qnil))
             rb_sys_fail("recvfrom(2)");
-        }
     }
 
     /* Resize the string to the amount of data received */
@@ -221,7 +236,7 @@ rsock_s_recvfrom(VALUE sock, int argc, VALUE *argv, enum sock_recv_type from)
         return rb_assoc_new(str, rsock_unixaddr(&arg.buf.un, arg.alen));
 #endif
       case RECV_SOCKET:
-	return rb_assoc_new(str, rsock_io_socket_addrinfo(sock, &arg.buf.addr, arg.alen));
+	return rb_assoc_new(str, rsock_io_socket_addrinfo(socket, &arg.buf.addr, arg.alen));
       default:
 	rb_bug("rsock_s_recvfrom called with bad value");
     }
@@ -679,13 +694,6 @@ accept_blocking(void *data)
 {
     struct accept_arg *arg = data;
     return (VALUE)cloexec_accept(arg->fd, arg->sockaddr, arg->len);
-}
-
-static int
-io_wait(VALUE io, rb_io_event_t events, VALUE timeout) {
-  VALUE result = rb_io_wait(io, RB_INT2NUM(events), timeout);
-
-  return RB_NUM2INT(result) & events;
 }
 
 VALUE
