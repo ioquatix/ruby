@@ -235,7 +235,7 @@ struct rb_fiber_struct {
     rb_context_t cont;
     VALUE first_proc;
     struct rb_fiber_struct *prev;
-    VALUE resuming_fiber;
+    struct rb_fiber_struct *resuming_fiber;
 
     BITFIELD(enum fiber_status, status, 2);
     /* Whether the fiber is allowed to implicitly yield. */
@@ -2179,7 +2179,7 @@ return_fiber(bool terminate)
 
     if (prev) {
         fiber->prev = NULL;
-        prev->resuming_fiber = Qnil;
+        prev->resuming_fiber = NULL;
         return prev;
     }
     else {
@@ -2193,9 +2193,7 @@ return_fiber(bool terminate)
         VM_ASSERT(root_fiber != NULL);
 
         // search resuming fiber
-        for (fiber = root_fiber;
-             RTEST(fiber->resuming_fiber);
-             fiber = fiber_ptr(fiber->resuming_fiber)) {
+        for (fiber = root_fiber; fiber->resuming_fiber; fiber = fiber->resuming_fiber) {
         }
 
         return fiber;
@@ -2236,7 +2234,7 @@ fiber_store(rb_fiber_t *next_fiber, rb_thread_t *th)
 }
 
 static inline VALUE
-fiber_switch(rb_fiber_t *fiber, int argc, const VALUE *argv, int kw_splat, VALUE resuming_fiber, bool yielding)
+fiber_switch(rb_fiber_t *fiber, int argc, const VALUE *argv, int kw_splat, rb_fiber_t *resuming_fiber, bool yielding)
 {
     VALUE value;
     rb_context_t *cont = &fiber->cont;
@@ -2283,8 +2281,9 @@ fiber_switch(rb_fiber_t *fiber, int argc, const VALUE *argv, int kw_splat, VALUE
 
     rb_fiber_t *current_fiber = fiber_current();
 
-    VM_ASSERT(!RTEST(current_fiber->resuming_fiber));
-    if (RTEST(resuming_fiber)) {
+    VM_ASSERT(!current_fiber->resuming_fiber);
+
+    if (resuming_fiber) {
         current_fiber->resuming_fiber = resuming_fiber;
         fiber->prev = fiber_current();
         fiber->yielding = 0;
@@ -2307,7 +2306,7 @@ fiber_switch(rb_fiber_t *fiber, int argc, const VALUE *argv, int kw_splat, VALUE
 
     // We cannot free the stack until the pthread is joined:
 #ifndef COROUTINE_PTHREAD_CONTEXT
-    if (RTEST(resuming_fiber) && FIBER_TERMINATED_P(fiber)) {
+    if (resuming_fiber && FIBER_TERMINATED_P(fiber)) {
         fiber_stack_release(fiber);
     }
 #endif
@@ -2329,7 +2328,7 @@ fiber_switch(rb_fiber_t *fiber, int argc, const VALUE *argv, int kw_splat, VALUE
 VALUE
 rb_fiber_transfer(VALUE fiber_value, int argc, const VALUE *argv)
 {
-    return fiber_switch(fiber_ptr(fiber_value), argc, argv, RB_NO_KEYWORDS, Qfalse, false);
+    return fiber_switch(fiber_ptr(fiber_value), argc, argv, RB_NO_KEYWORDS, NULL, false);
 }
 
 /*
@@ -2404,15 +2403,14 @@ rb_fiber_terminate(rb_fiber_t *fiber, int need_interrupt, VALUE error)
     if (need_interrupt) RUBY_VM_SET_INTERRUPT(&next_fiber->cont.saved_ec);
 
     if (RTEST(error))
-        fiber_switch(next_fiber, -1, &error, RB_NO_KEYWORDS, Qfalse, false);
+        fiber_switch(next_fiber, -1, &error, RB_NO_KEYWORDS, NULL, false);
     else
-        fiber_switch(next_fiber, 1, &value, RB_NO_KEYWORDS, Qfalse, false);
+        fiber_switch(next_fiber, 1, &value, RB_NO_KEYWORDS, NULL, false);
 }
 
-VALUE
-rb_fiber_resume_kw(VALUE fiber_value, int argc, const VALUE *argv, int kw_splat)
+static VALUE
+fiber_resume_kw(rb_fiber_t *fiber, int argc, const VALUE *argv, int kw_splat)
 {
-    rb_fiber_t *fiber = fiber_ptr(fiber_value);
     rb_fiber_t *current_fiber = fiber_current();
 
     if (argc == -1 && FIBER_CREATED_P(fiber)) {
@@ -2427,7 +2425,7 @@ rb_fiber_resume_kw(VALUE fiber_value, int argc, const VALUE *argv, int kw_splat)
     else if (fiber->prev != NULL) {
         rb_raise(rb_eFiberError, "attempt to resume a resumed fiber (double resume)");
     }
-    else if (RTEST(fiber->resuming_fiber)) {
+    else if (fiber->resuming_fiber) {
         rb_raise(rb_eFiberError, "attempt to resume a resuming fiber");
     }
     else if (fiber->prev == NULL &&
@@ -2435,27 +2433,33 @@ rb_fiber_resume_kw(VALUE fiber_value, int argc, const VALUE *argv, int kw_splat)
         rb_raise(rb_eFiberError, "attempt to resume a transferring fiber");
     }
 
-    VALUE result = fiber_switch(fiber, argc, argv, kw_splat, fiber_value, false);
+    VALUE result = fiber_switch(fiber, argc, argv, kw_splat, fiber, false);
 
     return result;
 }
 
 VALUE
-rb_fiber_resume(VALUE fiber_value, int argc, const VALUE *argv)
+rb_fiber_resume_kw(VALUE self, int argc, const VALUE *argv, int kw_splat)
 {
-    return rb_fiber_resume_kw(fiber_value, argc, argv, RB_NO_KEYWORDS);
+    return fiber_resume_kw(fiber_ptr(self), argc, argv, kw_splat);
+}
+
+VALUE
+rb_fiber_resume(VALUE self, int argc, const VALUE *argv)
+{
+    return fiber_resume_kw(fiber_ptr(self), argc, argv, RB_NO_KEYWORDS);
 }
 
 VALUE
 rb_fiber_yield_kw(int argc, const VALUE *argv, int kw_splat)
 {
-    return fiber_switch(return_fiber(false), argc, argv, kw_splat, Qfalse, true);
+    return fiber_switch(return_fiber(false), argc, argv, kw_splat, NULL, true);
 }
 
 VALUE
 rb_fiber_yield(int argc, const VALUE *argv)
 {
-    return fiber_switch(return_fiber(false), argc, argv, RB_NO_KEYWORDS, Qfalse, true);
+    return fiber_switch(return_fiber(false), argc, argv, RB_NO_KEYWORDS, NULL, true);
 }
 
 void
@@ -2502,43 +2506,6 @@ rb_fiber_m_resume(int argc, VALUE *argv, VALUE fiber)
 }
 
 VALUE rb_fiber_transfer_kw(VALUE fiber_value, int argc, const VALUE *argv, int kw_splat);
-
-/*
- *  call-seq:
- *     fiber.raise                                 -> obj
- *     fiber.raise(string)                         -> obj
- *     fiber.raise(exception [, string [, array]]) -> obj
- *
- *  Raises an exception in the fiber at the point at which the last
- *  +Fiber.yield+ was called. If the fiber has not been started or has
- *  already run to completion, raises +FiberError+. If the fiber is
- *  yielding, it is resumed. If it is transferring, it is transferred into.
- *  But if it is resuming, raises +FiberError+.
- *
- *  With no arguments, raises a +RuntimeError+. With a single +String+
- *  argument, raises a +RuntimeError+ with the string as a message.  Otherwise,
- *  the first parameter should be the name of an +Exception+ class (or an
- *  object that returns an +Exception+ object when sent an +exception+
- *  message). The optional second parameter sets the message associated with
- *  the exception, and the third parameter is an array of callback information.
- *  Exceptions are caught by the +rescue+ clause of <code>begin...end</code>
- *  blocks.
- */
-static VALUE
-rb_fiber_raise(int argc, VALUE *argv, VALUE fiber_value)
-{
-    rb_fiber_t *fiber = fiber_ptr(fiber_value);
-    VALUE exc = rb_make_exception(argc, argv);
-    if (RTEST(fiber->resuming_fiber)) {
-        rb_raise(rb_eFiberError, "attempt to raise a resuming fiber");
-    }
-    else if (FIBER_SUSPENDED_P(fiber) && !fiber->yielding) {
-        return rb_fiber_transfer_kw(fiber_value, -1, &exc, RB_NO_KEYWORDS);
-    }
-    else {
-        return rb_fiber_resume_kw(fiber_value, -1, &exc, RB_NO_KEYWORDS);
-    }
-}
 
 /*
  *  call-seq:
@@ -2700,22 +2667,29 @@ rb_fiber_backtrace_locations(int argc, VALUE *argv, VALUE fiber)
  *
  */
 static VALUE
-rb_fiber_m_transfer(int argc, VALUE *argv, VALUE fiber_value)
+rb_fiber_m_transfer(int argc, VALUE *argv, VALUE self)
 {
-    return rb_fiber_transfer_kw(fiber_value, argc, argv, rb_keyword_given_p());
+    return rb_fiber_transfer_kw(self, argc, argv, rb_keyword_given_p());
+}
+
+static VALUE
+fiber_transfer_kw(rb_fiber_t *fiber, int argc, const VALUE *argv, int kw_splat)
+{
+  if (fiber->resuming_fiber) {
+      rb_raise(rb_eFiberError, "attempt to transfer to a resuming fiber");
+  }
+
+  if (fiber->yielding) {
+      rb_raise(rb_eFiberError, "attempt to transfer to a yielding fiber");
+  }
+
+  return fiber_switch(fiber, argc, argv, kw_splat, NULL, false);
 }
 
 VALUE
-rb_fiber_transfer_kw(VALUE fiber_value, int argc, const VALUE *argv, int kw_splat)
+rb_fiber_transfer_kw(VALUE self, int argc, const VALUE *argv, int kw_splat)
 {
-    rb_fiber_t *fiber = fiber_ptr(fiber_value);
-    if (RTEST(fiber->resuming_fiber)) {
-        rb_raise(rb_eFiberError, "attempt to transfer to a resuming fiber");
-    }
-    if (fiber->yielding) {
-        rb_raise(rb_eFiberError, "attempt to transfer to a yielding fiber");
-    }
-    return fiber_switch(fiber, argc, argv, kw_splat, Qfalse, false);
+    return fiber_transfer_kw(fiber_ptr(self), argc, argv, kw_splat);
 }
 
 /*
@@ -2732,6 +2706,55 @@ static VALUE
 rb_fiber_s_yield(int argc, VALUE *argv, VALUE klass)
 {
     return rb_fiber_yield_kw(argc, argv, rb_keyword_given_p());
+}
+
+static VALUE
+fiber_raise(rb_fiber_t *fiber, int argc, VALUE *argv)
+{
+    VALUE exception = rb_make_exception(argc, argv);
+
+    if (fiber->resuming_fiber) {
+        rb_raise(rb_eFiberError, "attempt to raise a resuming fiber");
+    }
+    else if (FIBER_SUSPENDED_P(fiber) && !fiber->yielding) {
+        return fiber_transfer_kw(fiber, -1, &exception, RB_NO_KEYWORDS);
+    }
+    else {
+        return fiber_resume_kw(fiber, -1, &exception, RB_NO_KEYWORDS);
+    }
+}
+
+VALUE
+rb_fiber_raise(VALUE fiber, int argc, VALUE *argv)
+{
+    return fiber_raise(fiber_ptr(fiber), argc, argv);
+}
+
+/*
+ *  call-seq:
+ *     fiber.raise                                 -> obj
+ *     fiber.raise(string)                         -> obj
+ *     fiber.raise(exception [, string [, array]]) -> obj
+ *
+ *  Raises an exception in the fiber at the point at which the last
+ *  +Fiber.yield+ was called. If the fiber has not been started or has
+ *  already run to completion, raises +FiberError+. If the fiber is
+ *  yielding, it is resumed. If it is transferring, it is transferred into.
+ *  But if it is resuming, raises +FiberError+.
+ *
+ *  With no arguments, raises a +RuntimeError+. With a single +String+
+ *  argument, raises a +RuntimeError+ with the string as a message.  Otherwise,
+ *  the first parameter should be the name of an +Exception+ class (or an
+ *  object that returns an +Exception+ object when sent an +exception+
+ *  message). The optional second parameter sets the message associated with
+ *  the exception, and the third parameter is an array of callback information.
+ *  Exceptions are caught by the +rescue+ clause of <code>begin...end</code>
+ *  blocks.
+ */
+static VALUE
+rb_fiber_m_raise(int argc, VALUE *argv, VALUE self)
+{
+    return rb_fiber_raise(self, argc, argv);
 }
 
 /*
@@ -2754,7 +2777,7 @@ fiber_to_s(VALUE fiber_value)
     const rb_proc_t *proc;
     char status_info[0x20];
 
-    if (RTEST(fiber->resuming_fiber)) {
+    if (fiber->resuming_fiber) {
         snprintf(status_info, 0x20, " (%s by resuming)", fiber_status_name(fiber->status));
     }
     else {
@@ -3088,7 +3111,7 @@ Init_Cont(void)
     rb_define_method(rb_cFiber, "initialize", rb_fiber_initialize, -1);
     rb_define_method(rb_cFiber, "blocking?", rb_fiber_blocking_p, 0);
     rb_define_method(rb_cFiber, "resume", rb_fiber_m_resume, -1);
-    rb_define_method(rb_cFiber, "raise", rb_fiber_raise, -1);
+    rb_define_method(rb_cFiber, "raise", rb_fiber_m_raise, -1);
     rb_define_method(rb_cFiber, "backtrace", rb_fiber_backtrace, -1);
     rb_define_method(rb_cFiber, "backtrace_locations", rb_fiber_backtrace_locations, -1);
     rb_define_method(rb_cFiber, "to_s", fiber_to_s, 0);
