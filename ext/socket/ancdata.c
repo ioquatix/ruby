@@ -337,7 +337,7 @@ ancillary_timestamp(VALUE self)
         memcpy((char*)&bt, RSTRING_PTR(data), sizeof(bt));
 	d = ULL2NUM(0x100000000ULL);
 	d = mul(d,d);
-	timev = add(TIMET2NUM(bt.sec), quo(ULL2NUM(bt.frac), d));
+	timev = add(RB_TIMET2NUM(bt.sec), quo(ULL2NUM(bt.frac), d));
         result = rb_time_num_new(timev, Qnil);
     }
 # endif

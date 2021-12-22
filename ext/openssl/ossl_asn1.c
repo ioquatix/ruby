@@ -87,7 +87,7 @@ ossl_time_split(VALUE time, time_t *sec, int *days)
     }
     else {
 	*days = NUM2INT(rb_funcall(num, rb_intern("/"), 1, INT2FIX(86400)));
-	*sec = NUM2TIMET(rb_funcall(num, rb_intern("%"), 1, INT2FIX(86400)));
+	*sec = RB_NUM2TIMET(rb_funcall(num, rb_intern("%"), 1, INT2FIX(86400)));
     }
 }
 

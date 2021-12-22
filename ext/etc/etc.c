@@ -145,7 +145,7 @@ safe_setup_filesystem_str(const char *str)
 # ifdef __APPLE__
 #   define PW_TIME2VAL(t) INT2NUM((int)(t))
 # else
-#   define PW_TIME2VAL(t) TIMET2NUM(t)
+#   define PW_TIME2VAL(t) RB_TIMET2NUM(t)
 # endif
 
 static VALUE
