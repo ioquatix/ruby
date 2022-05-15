@@ -50,7 +50,7 @@ static ID autoload, classpath, tmp_classpath;
 // This hash table maps file paths to loadable features. We use this to track
 // autoload state until it's no longer needed.
 // feature (file path) => struct autoload_i
-static VALUE autoload_featuremap;
+static VALUE autoload_features;
 
 // This mutex is used to protect autoloading state. We use a global mutex which
 // is held until a per-feature mutex can be created. This ensures there are no
@@ -86,9 +86,9 @@ Init_var_tables(void)
     rb_obj_hide(autoload_mutex);
     rb_gc_register_mark_object(autoload_mutex);
 
-    autoload_featuremap = rb_ident_hash_new();
-    rb_obj_hide(autoload_featuremap);
-    rb_gc_register_mark_object(autoload_featuremap);
+    autoload_features = rb_ident_hash_new();
+    rb_obj_hide(autoload_features);
+    rb_gc_register_mark_object(autoload_features);
 }
 
 static inline bool
@@ -2234,18 +2234,32 @@ rb_autoload(VALUE mod, ID id, const char *file)
 static void const_set(VALUE klass, ID id, VALUE val);
 static void const_added(VALUE klass, ID const_name);
 
+static VALUE
+autoload_feature(VALUE file)
+{
+  VALUE ad = rb_hash_aref(autoload_features, file);
+  struct autoload_data_i *ele;
+
+  if (NIL_P(ad)) {
+      ad = TypedData_Make_Struct(0, struct autoload_data_i, &autoload_data_i_type, ele);
+      ele->feature = file;
+      ele->state = 0;
+      ccan_list_head_init(&ele->constants);
+      rb_hash_aset(autoload_features, file, ad);
+  }
+
+  return ad;
+}
+
 void
 rb_autoload_str(VALUE mod, ID id, VALUE file)
 {
     st_data_t av;
-    VALUE ad;
     struct st_table *tbl;
-    struct autoload_data_i *ele;
     rb_const_entry_t *ce;
 
     if (!rb_is_const_id(id)) {
-	rb_raise(rb_eNameError, "autoload must be constant name: %"PRIsVALUE"",
-		 QUOTE_ID(id));
+        rb_raise(rb_eNameError, "autoload must be constant name: %"PRIsVALUE"", QUOTE_ID(id));
     }
 
     Check_Type(file, T_STRING);
@@ -2264,31 +2278,21 @@ rb_autoload_str(VALUE mod, ID id, VALUE file)
         tbl = check_autoload_table((VALUE)av);
     }
     else {
-	if (!tbl) tbl = RCLASS_IV_TBL(mod) = st_init_numtable();
-	av = (st_data_t)TypedData_Wrap_Struct(0, &autoload_data_type, 0);
-	st_add_direct(tbl, (st_data_t)autoload, av);
-	RB_OBJ_WRITTEN(mod, Qnil, av);
-	DATA_PTR(av) = tbl = st_init_numtable();
+        if (!tbl) tbl = RCLASS_IV_TBL(mod) = st_init_numtable();
+        av = (st_data_t)TypedData_Wrap_Struct(0, &autoload_data_type, 0);
+        st_add_direct(tbl, (st_data_t)autoload, av);
+        RB_OBJ_WRITTEN(mod, Qnil, av);
+        DATA_PTR(av) = tbl = st_init_numtable();
     }
 
     file = rb_fstring(file);
-    ad = rb_hash_aref(autoload_featuremap, file);
-    if (NIL_P(ad)) {
-        ad = TypedData_Make_Struct(0, struct autoload_data_i,
-                                    &autoload_data_i_type, ele);
-        ele->feature = file;
-        ele->state = 0;
-        ccan_list_head_init(&ele->constants);
-        rb_hash_aset(autoload_featuremap, file, ad);
-    }
-    else {
-        ele = rb_check_typeddata(ad, &autoload_data_i_type);
-    }
+    VALUE ad = rb_mutex_synchronize(autoload_mutex, autoload_feature, file);
+    struct autoload_data_i *ele = rb_check_typeddata(ad, &autoload_data_i_type);
+
     {
         VALUE acv;
         struct autoload_const *ac;
-        acv = TypedData_Make_Struct(0, struct autoload_const,
-                                    &autoload_const_type, ac);
+        acv = TypedData_Make_Struct(0, struct autoload_const, &autoload_const_type, ac);
         ac->mod = mod;
         ac->id = id;
         ac->value = Qundef;
@@ -2307,19 +2311,16 @@ autoload_delete(VALUE mod, ID id)
     st_data_t val, load = 0, n = id;
 
     if (st_lookup(RCLASS_IV_TBL(mod), (st_data_t)autoload, &val)) {
-	struct st_table *tbl = check_autoload_table((VALUE)val);
-	struct autoload_data_i *ele;
-	struct autoload_const *ac;
+        struct st_table *tbl = check_autoload_table((VALUE)val);
+        struct autoload_data_i *ele;
+        struct autoload_const *ac;
 
-	st_delete(tbl, &n, &load);
+        st_delete(tbl, &n, &load);
+
         /* Qfalse can indicate already deleted */
         if (load != Qfalse) {
             ele = get_autoload_data((VALUE)load, &ac);
             VM_ASSERT(ele);
-            if (ele) {
-                VM_ASSERT(!ccan_list_empty(&ele->constants));
-            }
-
             /*
              * we must delete here to avoid "already initialized" warnings
              * with parallel autoload.  Using list_del_init here so list_del
@@ -2484,38 +2485,38 @@ static VALUE
 autoload_reset(VALUE arg)
 {
     struct autoload_state *state = (struct autoload_state *)arg;
-    struct autoload_const *ac = state->ac;
     struct autoload_data_i *ele;
 
-    ele = rb_check_typeddata(ac->ad, &autoload_data_i_type);
+    ele = rb_check_typeddata(state->ac->ad, &autoload_data_i_type);
     VALUE mutex = state->mutex;
 
     // If we are the main thread to execute...
-    if (ele->state == state) {
-        // Prepare to update the state of the world:
-        rb_mutex_lock(autoload_mutex);
+    VM_ASSERT(ele->state == state);
 
-        // At the last, move a value defined in autoload to constant table:
-        if (RTEST(state->result)) {
-            // Can help to test race conditions:
-            // rb_thread_schedule();
+    // Prepare to update the state of the world:
+    rb_mutex_lock(autoload_mutex);
 
-            struct autoload_const *next;
+    // At the last, move a value defined in autoload to constant table:
+    if (RTEST(state->result)) {
+        // Can help to test race conditions:
+        // rb_thread_schedule();
 
-            ccan_list_for_each_safe(&ele->constants, ac, next, cnode) {
-                if (ac->value != Qundef) {
-                    autoload_const_set(ac);
-                }
+        struct autoload_const *ac = NULL;
+        while ((ac = ccan_list_pop(&ele->constants, struct autoload_const, cnode))) {
+            if (ac->value != Qundef) {
+                autoload_const_set(ac);
             }
         }
-
-        // Reset the autoload state - i.e. clear our state from the autoload data:
-        ele->state = 0;
-        ele->fork_gen = 0;
-
-        rb_mutex_unlock(autoload_mutex);
     }
 
+    // Reset the autoload state - i.e. clear our state from the autoload data:
+    ele->state = 0;
+    ele->fork_gen = 0;
+
+    // Since the feature is now loaded, delete the autoload data for it:
+    rb_hash_delete(autoload_features, ele->feature);
+
+    rb_mutex_unlock(autoload_mutex);
     rb_mutex_unlock(mutex);
 
     return 0; /* ignored */
@@ -2563,14 +2564,16 @@ autoload_load_synchronized(VALUE _arguments)
         state->mutex = rb_mutex_new();
         ele->fork_gen = GET_VM()->fork_gen;
         ele->state = state;
+
+        return load;
     }
     else if (rb_mutex_owned_p(ele->state->mutex)) {
         return Qfalse;
     } else {
         state->mutex = ele->state->mutex;
-    }
 
-    return load;
+        return Qtrue;
+    }
 }
 
 VALUE
@@ -2602,27 +2605,31 @@ rb_autoload_load(VALUE module, ID name)
     // Every thread that tries to autoload a variable will stop here:
     rb_mutex_lock(state.mutex);
 
-    // Every thread goes through this process, but only one of them will ultimately require the file.
+    if (load == Qtrue) {
+        // We basically just waited until the first thread was done requiring the file:
+        rb_mutex_unlock(state.mutex);
+        return Qfalse;
+    } else {
+        int flag = 0;
 
-    int flag = 0;
+        // Capture any flags on the specified "Qundef" constant so we can re-apply them later:
+        if (ce) {
+            flag = ce->flag & (CONST_DEPRECATED | CONST_VISIBILITY_MASK);
+        }
 
-    // Capture any flags on the specified "Qundef" constant so we can re-apply them later:
-    if (ce) {
-        flag = ce->flag & (CONST_DEPRECATED | CONST_VISIBILITY_MASK);
+        VALUE result = rb_ensure(autoload_require, (VALUE)&state, autoload_reset, (VALUE)&state);
+
+        // If we did not apply the constant after requiring it, remove it:
+        if (!(ce = rb_const_lookup(module, name)) || ce->value == Qundef) {
+            rb_const_remove(module, name);
+        }
+        else if (flag > 0) {
+            // Re-apply any flags:
+            ce->flag |= flag;
+        }
+
+        return result;
     }
-
-    VALUE result = rb_ensure(autoload_require, (VALUE)&state, autoload_reset, (VALUE)&state);
-
-    // If we did not apply the constant after requiring it, remove it:
-    if (!(ce = rb_const_lookup(module, name)) || ce->value == Qundef) {
-        rb_const_remove(module, name);
-    }
-    else if (flag > 0) {
-        // Re-apply any flags:
-        ce->flag |= flag;
-    }
-
-    return result;
 }
 
 VALUE
@@ -2875,8 +2882,8 @@ rb_const_remove(VALUE mod, ID id)
 
     val = ce->value;
     if (val == Qundef) {
-	autoload_delete(mod, id);
-	val = Qnil;
+        autoload_delete(mod, id);
+        val = Qnil;
     }
     xfree(ce);
     return val;
