@@ -665,7 +665,7 @@ thread_start_func_2(rb_thread_t *th, VALUE *stack_start)
     EC_PUSH_TAG(th->ec);
 
     if ((state = EC_EXEC_TAG()) == TAG_NONE) {
-        SAVE_ROOT_JMPBUF(th, thread_do_start(th));
+        thread_do_start(th);
     }
     else {
         errinfo = th->ec->errinfo;
