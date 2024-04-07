@@ -3003,6 +3003,27 @@ rb_fiber_alive_p(VALUE fiber_value)
 }
 
 /*
+ *  call-seq: fiber.resuming_fiber -> Fiber or nil
+ *
+ *  If the fiber has resumed another fiber, returns the fiber that has been resumed.
+ *
+ *  Example:
+ *
+ *    root_fiber = Fiber.current
+ *    f1 = Fiber.new { root_fiber.transfer }
+ *    f2 = Fiber.new { f1.resume }
+ *    f2.transfer
+ *    p f2.resuming_fiber # => f1
+ */
+VALUE
+rb_fiber_resuming_fiber(VALUE fiber_value)
+{
+    struct rb_fiber_struct *fiber = fiber_ptr(fiber_value);
+
+    return fiber->resuming_fiber ? fiber->resuming_fiber->cont.self : RUBY_Qnil;
+}
+
+/*
  *  call-seq:
  *     fiber.resume(args, ...) -> obj
  *
@@ -3504,7 +3525,10 @@ Init_Cont(void)
     rb_define_method(rb_cFiber, "to_s", fiber_to_s, 0);
     rb_define_alias(rb_cFiber, "inspect", "to_s");
     rb_define_method(rb_cFiber, "transfer", rb_fiber_m_transfer, -1);
+
     rb_define_method(rb_cFiber, "alive?", rb_fiber_alive_p, 0);
+
+    rb_define_method(rb_cFiber, "resuming_fiber", rb_fiber_resuming_fiber, 0);
 
     rb_define_singleton_method(rb_cFiber, "blocking?", rb_fiber_s_blocking_p, 0);
     rb_define_singleton_method(rb_cFiber, "scheduler", rb_fiber_s_scheduler, 0);
