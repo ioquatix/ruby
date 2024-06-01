@@ -1574,7 +1574,9 @@ fiber_setcontext(rb_fiber_t *new_fiber, rb_fiber_t *old_fiber)
     // if (DEBUG) fprintf(stderr, "fiber_setcontext: %p[%p] -> %p[%p]\n", (void*)old_fiber, old_fiber->stack.base, (void*)new_fiber, new_fiber->stack.base);
 
 #if defined(COROUTINE_SANITIZE_ADDRESS)
+    fprintf(stderr, "__sanitizer_start_switch_fiber(%p, %p, %zu)\n", FIBER_TERMINATED_P(old_fiber) ? NULL : old_fiber->context.fake_stack, new_fiber->context.stack_base, new_fiber->context.stack_size);
     __sanitizer_start_switch_fiber(FIBER_TERMINATED_P(old_fiber) ? NULL : &old_fiber->context.fake_stack, new_fiber->context.stack_base, new_fiber->context.stack_size);
+    fprintf(stderr, "__sanitizer_start_switch_fiber -> %p\n", old_fiber->context.fake_stack);
 #endif
 
     /* swap machine context */
