@@ -1155,6 +1155,17 @@ rb_frame_last_func(void)
     return mid;
 }
 
+static VALUE module_from_block(void) {
+    if (rb_block_given_p()) {
+        VALUE module = rb_module_new();
+        rb_mod_module_exec(1, &module, module);
+
+        return module;
+    } else {
+        return Qundef;
+    }
+}
+
 /*
  *  call-seq:
  *     append_features(mod)   -> mod
@@ -1180,9 +1191,12 @@ rb_mod_append_features(VALUE module, VALUE include)
 
 /*
  *  call-seq:
- *     include(module, ...)    -> self
+ *     include(module, ..., &block)    -> self
  *
  *  Invokes Module.append_features on each parameter in reverse order.
+ *
+ *  If a block is given, an anonymous module is constructed by evaluating
+ *  the block and included first.
  */
 
 static VALUE
@@ -1198,17 +1212,27 @@ rb_mod_include(int argc, VALUE *argv, VALUE module)
         rb_raise(rb_eTypeError, "Refinement#include has been removed");
     }
 
-    rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
+    VALUE block_module = module_from_block();
+    int arity = block_module == Qundef ? 1 : 0;
+
+    rb_check_arity(argc, arity, UNLIMITED_ARGUMENTS);
     for (i = 0; i < argc; i++) {
         Check_Type(argv[i], T_MODULE);
         if (FL_TEST(argv[i], RMODULE_IS_REFINEMENT)) {
             rb_raise(rb_eTypeError, "Cannot include refinement");
         }
     }
+
+    if (block_module != Qundef) {
+        rb_funcall(block_module, id_append_features, 1, module);
+        rb_funcall(block_module, id_included, 1, module);
+    }
+
     while (argc--) {
         rb_funcall(argv[argc], id_append_features, 1, module);
         rb_funcall(argv[argc], id_included, 1, module);
     }
+
     return module;
 }
 
@@ -1237,9 +1261,12 @@ rb_mod_prepend_features(VALUE module, VALUE prepend)
 
 /*
  *  call-seq:
- *     prepend(module, ...)    -> self
+ *     prepend(module, ..., &block)    -> self
  *
  *  Invokes Module.prepend_features on each parameter in reverse order.
+ *
+ *  If a block is given, an anonymous module is constructed by evaluating
+ *  the block and prepended first.
  */
 
 static VALUE
@@ -1255,17 +1282,27 @@ rb_mod_prepend(int argc, VALUE *argv, VALUE module)
     CONST_ID(id_prepend_features, "prepend_features");
     CONST_ID(id_prepended, "prepended");
 
-    rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
+    VALUE block_module = module_from_block();
+    int arity = block_module == Qundef ? 1 : 0;
+
+    rb_check_arity(argc, arity, UNLIMITED_ARGUMENTS);
     for (i = 0; i < argc; i++) {
         Check_Type(argv[i], T_MODULE);
         if (FL_TEST(argv[i], RMODULE_IS_REFINEMENT)) {
             rb_raise(rb_eTypeError, "Cannot prepend refinement");
         }
     }
+
+    if (block_module != Qundef) {
+        rb_funcall(block_module, id_prepend_features, 1, module);
+        rb_funcall(block_module, id_prepended, 1, module);
+    }
+
     while (argc--) {
         rb_funcall(argv[argc], id_prepend_features, 1, module);
         rb_funcall(argv[argc], id_prepended, 1, module);
     }
+
     return module;
 }
 

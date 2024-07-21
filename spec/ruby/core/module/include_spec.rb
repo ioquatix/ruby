@@ -581,6 +581,20 @@ describe "Module#include" do
     c2.include(m)
     c2.new.foo.should == [:c2, :m1]
   end
+
+  ruby_version_is "3.4" do
+    it "can include an anonymous block" do
+      module ModuleSpecs::IncludeBlock
+        include do
+          def foo
+            :anoynmous
+          end
+        end
+      end
+
+      ModuleSpecs::IncludeBlock.method_defined?(:foo).should == true
+    end
+  end
 end
 
 describe "Module#include?" do

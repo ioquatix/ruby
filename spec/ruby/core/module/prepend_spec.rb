@@ -785,6 +785,20 @@ describe "Module#prepend" do
     klass.ancestors.take(4).should == [klass, submod, mod, Object]
   end
 
+  ruby_version_is "3.4" do
+    it "can include an anonymous block" do
+      module ModuleSpecs::PrependBlock
+        prepend do
+          def foo
+            :anoynmous
+          end
+        end
+      end
+
+      ModuleSpecs::PrependBlock.method_defined?(:foo).should == true
+    end
+  end
+
   # https://bugs.ruby-lang.org/issues/17423
   describe "when module already exists in ancestor chain" do
     ruby_version_is ""..."3.1" do
