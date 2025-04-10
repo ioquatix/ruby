@@ -3326,6 +3326,15 @@ vm_default_params_setup(rb_vm_t *vm)
                 RUBY_VM_FIBER_MACHINE_STACK_SIZE,
                 RUBY_VM_FIBER_MACHINE_STACK_SIZE_MIN);
 
+    fprintf(stderr, "thread_vm_stack_size: %"PRIuSIZE", "
+            "thread_machine_stack_size: %"PRIuSIZE", "
+            "fiber_vm_stack_size: %"PRIuSIZE", "
+            "fiber_machine_stack_size: %"PRIuSIZE"\n",
+            vm->default_params.thread_vm_stack_size,
+            vm->default_params.thread_machine_stack_size,
+            vm->default_params.fiber_vm_stack_size,
+            vm->default_params.fiber_machine_stack_size);
+
     /* environment dependent check */
     check_machine_stack_size(&vm->default_params.thread_machine_stack_size);
     check_machine_stack_size(&vm->default_params.fiber_machine_stack_size);

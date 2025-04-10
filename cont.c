@@ -3370,6 +3370,20 @@ rb_fiber_pool_initialize(int argc, VALUE* argv, VALUE self)
  *     fiber.resume #=> FiberError: dead fiber called
  */
 
+VALUE consume_stack(VALUE self, VALUE _amount) {
+    size_t amount = NUM2SIZET(_amount);
+    char *stack = alloca(amount);
+    memset(stack, 0, amount);
+
+    VALUE pointer = SIZET2NUM((uintptr_t)stack);
+
+    if (rb_block_given_p()) {
+        return rb_yield(pointer);
+    } else {
+        return pointer;
+    }
+}
+
 void
 Init_Cont(void)
 {
@@ -3415,6 +3429,7 @@ Init_Cont(void)
     rb_define_singleton_method(rb_cFiber, "blocking", rb_fiber_blocking, 0);
     rb_define_singleton_method(rb_cFiber, "[]", rb_fiber_storage_aref, 1);
     rb_define_singleton_method(rb_cFiber, "[]=", rb_fiber_storage_aset, 2);
+    rb_define_singleton_method(rb_cFiber, "consume_stack", consume_stack, 1);
 
     rb_define_method(rb_cFiber, "initialize", rb_fiber_initialize, -1);
     rb_define_method(rb_cFiber, "blocking?", rb_fiber_blocking_p, 0);
