@@ -1,0 +1,28 @@
+(gdb) frame 41
+#41 rb_vm_exec (ec=0x78e1ba03ebd0) at vm.c:2598
+2598	        result = vm_exec_loop(ec, TAG_NONE, &_tag, result);
+(gdb) p ec
+$16 = (rb_execution_context_t *) 0x78e1ba03ebd0
+(gdb) p *ec
+$17 = {vm_stack = 0x78e18f6bd000, vm_stack_size = 131072, cfp = 0x78e18f7b9fa8, tag = 0x78e18f6b8680, interrupt_flag = 1, interrupt_mask = 0,
+  fiber_ptr = 0x78e1ba03eb80, thread_ptr = 0x78e2a326e000, local_storage = 0x78e1c0b6ebe0, local_storage_recursive_hash = 132907951670960,
+  local_storage_recursive_hash_for_trace = 4, storage = 132907951687440, root_lep = 0x78e1bcfed228, root_svar = 0, trace_arg = 0x0, errinfo = 4,
+  passed_block_handler = 0, raised_flag = 0 '\000', method_missing_reason = MISSING_NOENTRY, private_const_reference = 0, machine = {
+    stack_start = 0x78e18f6bd000, stack_end = 0x78e18f6b8350, stack_maxsize = 1052672, regs = {{__jmpbuf = {132910169163008, 2889401237331086593,
+          132914795205248, 0, 132909517630920, 132914795204608, 2889332831212899585, 2890925869273025793}, __mask_was_saved = 0, __saved_mask = {__val = {
+            0 <repeats 16 times>}}}}}}
+(gdb) p ec->cfp
+$18 = (rb_control_frame_t *) 0x78e18f7b9fa8
+(gdb) p *ec->cfp
+$19 = {pc = 0x78e277625b50, sp = 0x78e18f6bfeb8, iseq = 0x78e278a55810, self = 132912223232360, ep = 0x78e18f6bfea8, block_code = 0x0,
+  jit_return = 0x78e169e39006}
+
+  (gdb) frame 6
+  #6  0x000078e2a40dc026 in sigsegv (sig=11, info=0x78e2a214b030, ctx=0x78e2a214af00) at signal.c:934
+  934	    rb_bug_for_fatal_signal(default_sigsegv_handler, sig, SIGINFO_CTX, "Segmentation fault" MESSAGE_FAULT_ADDRESS);
+  (gdb) p *info
+  $21 = {si_signo = 11, si_errno = 0, si_code = 1, __pad0 = 0, _sifields = {_pad = {1776484352, 30945, 0 <repeats 26 times>}, _kill = {si_pid = 1776484352,
+        si_uid = 30945}, _timer = {si_tid = 1776484352, si_overrun = 30945, si_sigval = {sival_int = 0, sival_ptr = 0x0}}, _rt = {si_pid = 1776484352,
+        si_uid = 30945, si_sigval = {sival_int = 0, sival_ptr = 0x0}}, _sigchld = {si_pid = 1776484352, si_uid = 30945, si_status = 0, si_utime = 0, si_stime = 0},
+      _sigfault = {si_addr = 0x78e169e30000, si_addr_lsb = 0, _bounds = {_addr_bnd = {_lower = 0x0, _upper = 0x0}, _pkey = 0}}, _sigpoll = {
+        si_band = 132909539459072, si_fd = 0}, _sigsys = {_call_addr = 0x78e169e30000, _syscall = 0, _arch = 0}}}
