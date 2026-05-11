@@ -1106,9 +1106,9 @@ rb_fiber_scheduler_address_resolve(VALUE scheduler, VALUE hostname)
  *       Thread.new{blocking_operation.call}.join
  *     end
  */
-VALUE rb_fiber_scheduler_blocking_operation_wait(VALUE scheduler, void* (*function)(void *), void *data, rb_unblock_function_t *unblock_function, void *data2, int flags, struct rb_fiber_scheduler_blocking_operation_state *state)
+VALUE rb_fiber_scheduler_blocking_operation_wait(VALUE scheduler, void* (*function)(void *), void *data, rb_unblock_function_t *unblock_function, void *data2, int flags, struct rb_fiber_scheduler_blocking_operation_state *blocking_operation_state)
 {
-    fprintf(stderr, "rb_fiber_scheduler_blocking_operation_wait: scheduler=%p, function=%p, data=%p, unblock_function=%p, data2=%p, flags=%d, state=%p\n", scheduler, function, data, unblock_function, data2, flags, state);
+    fprintf(stderr, "rb_fiber_scheduler_blocking_operation_wait: scheduler=%p, function=%p, data=%p, unblock_function=%p, data2=%p, flags=%d, state=%p\n", (void*)scheduler, function, data, unblock_function, data2, flags, blocking_operation_state);
 
     // Check if scheduler supports blocking_operation_wait before creating the object
     if (!rb_respond_to(scheduler, id_blocking_operation_wait)) {
@@ -1145,7 +1145,7 @@ VALUE rb_fiber_scheduler_blocking_operation_wait(VALUE scheduler, void* (*functi
     // to blocking_operation->state is not writing into freed memory.  We do not
     // copy the state in the non-COMPLETED paths, so the caller never reads a
     // partial result.
-    fprintf(stderr, "rb_fiber_scheduler_blocking_operation_wait: blocking_operation=%p\n operation->status=%d\n state=%d\n", operation, current_status, state);
+    fprintf(stderr, "rb_fiber_scheduler_blocking_operation_wait: blocking_operation=%p\n state=%d\n", (void*)blocking_operation, state);
     rb_fiber_scheduler_blocking_operation_t *operation = get_blocking_operation(blocking_operation);
     rb_atomic_t current_status = RUBY_ATOMIC_LOAD(operation->status);
 
@@ -1157,7 +1157,7 @@ VALUE rb_fiber_scheduler_blocking_operation_wait(VALUE scheduler, void* (*functi
     // Copy the result out before invalidating the operation, so the caller
     // gets a stable snapshot regardless of what the scheduler does afterwards.
     if (current_status == RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_COMPLETED && state) {
-        *state = operation->state;
+        *blocking_operation_state = operation->state;
     }
 
     // Invalidate the function pointer so the now-useless BlockingOperation VALUE
