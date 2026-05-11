@@ -71,7 +71,7 @@ struct rb_fiber_scheduler_blocking_operation {
     void *data2;
 
     int flags;
-    struct rb_fiber_scheduler_blocking_operation_state *state;
+    struct rb_fiber_scheduler_blocking_operation_state state;
 
     // Execution status
     volatile rb_atomic_t status;
@@ -107,7 +107,7 @@ blocking_operation_alloc(VALUE klass)
     blocking_operation->unblock_function = NULL;
     blocking_operation->data2 = NULL;
     blocking_operation->flags = 0;
-    blocking_operation->state = NULL;
+    blocking_operation->state = (struct rb_fiber_scheduler_blocking_operation_state){0};
     blocking_operation->status = RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_QUEUED;
 
     return obj;
@@ -137,31 +137,47 @@ blocking_operation_call(VALUE self)
 {
     rb_fiber_scheduler_blocking_operation_t *blocking_operation = get_blocking_operation(self);
 
-    if (blocking_operation->status != RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_QUEUED) {
-        rb_raise(rb_eRuntimeError, "Blocking operation has already been executed!");
-    }
-
     if (blocking_operation->function == NULL) {
         rb_raise(rb_eRuntimeError, "Blocking operation has no function to execute!");
     }
 
-    if (blocking_operation->state == NULL) {
-        rb_raise(rb_eRuntimeError, "Blocking operation has no result object!");
+    // Atomically transition QUEUED → EXECUTING so that the invariant check in
+    // rb_fiber_scheduler_blocking_operation_wait sees EXECUTING and calls rb_bug
+    // if the hook returns while we are still running.
+    rb_atomic_t expected = RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_QUEUED;
+    if (RUBY_ATOMIC_CAS(blocking_operation->status, expected,
+                        RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_EXECUTING) != expected) {
+        rb_raise(rb_eRuntimeError, "Blocking operation has already been executed!");
     }
 
-    // Mark as executing
-    blocking_operation->status = RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_EXECUTING;
+    // Execute the blocking operation without GVL, writing directly into the
+    // embedded state.  The state is owned by this heap-allocated Ruby object
+    // and remains valid for the object's lifetime.
+    blocking_operation->state.result = rb_nogvl(
+        blocking_operation->function, blocking_operation->data,
+        blocking_operation->unblock_function, blocking_operation->data2,
+        blocking_operation->flags);
+    blocking_operation->state.saved_errno = rb_errno();
 
-    // Execute the blocking operation without GVL
-    blocking_operation->state->result = rb_nogvl(blocking_operation->function, blocking_operation->data,
-                                         blocking_operation->unblock_function, blocking_operation->data2,
-                                         blocking_operation->flags);
-    blocking_operation->state->saved_errno = rb_errno();
-
-    // Mark as completed
-    blocking_operation->status = RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_COMPLETED;
+    // Atomically transition to COMPLETED (unless cancel() raced us to CANCELLED).
+    rb_atomic_t call_expected = RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_EXECUTING;
+    if (RUBY_ATOMIC_CAS(blocking_operation->status, call_expected,
+                        RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_COMPLETED) != call_expected) {
+        // Was cancelled during execution; errno already reflects the interruption.
+        blocking_operation->state.saved_errno = EINTR;
+    }
 
     return Qnil;
+}
+
+/*
+ * Force the operation's status to EXECUTING without running its function.
+ * For testing only — see rb_fiber_scheduler_blocking_operation_force_executing.
+ */
+void
+rb_fiber_scheduler_blocking_operation_force_executing(rb_fiber_scheduler_blocking_operation_t *blocking_operation)
+{
+    RUBY_ATOMIC_SET(blocking_operation->status, RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_EXECUTING);
 }
 
 /*
@@ -169,7 +185,7 @@ blocking_operation_call(VALUE self)
  *
  * This function safely extracts the opaque struct from a BlockingOperation VALUE
  * while holding the GVL. The returned pointer can be passed to worker threads
- * and used with rb_fiber_scheduler_blocking_operation_execute_opaque_nogvl.
+ * and used with rb_fiber_scheduler_blocking_operation_execute.
  *
  * Returns the opaque struct pointer on success, NULL on error.
  * Must be called while holding the GVL.
@@ -196,7 +212,7 @@ rb_fiber_scheduler_blocking_operation_execute(rb_fiber_scheduler_blocking_operat
         return -1;
     }
 
-    if (blocking_operation->function == NULL || blocking_operation->state == NULL) {
+    if (blocking_operation->function == NULL) {
         return -1; // Invalid blocking operation
     }
 
@@ -210,18 +226,17 @@ rb_fiber_scheduler_blocking_operation_execute(rb_fiber_scheduler_blocking_operat
         return -1;
     }
 
-    // Now we're executing - call the function
-    blocking_operation->state->result = blocking_operation->function(blocking_operation->data);
-    blocking_operation->state->saved_errno = errno;
+    // Execute the blocking function, writing directly into the embedded state.
+    blocking_operation->state.result = blocking_operation->function(blocking_operation->data);
+    blocking_operation->state.saved_errno = errno;
 
-    // Atomically transition to completed (unless cancelled during execution)
+    // Atomically transition to COMPLETED (unless cancel() raced us to CANCELLED).
     expected = RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_EXECUTING;
     if (RUBY_ATOMIC_CAS(blocking_operation->status, expected, RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_COMPLETED) == expected) {
-        // Successfully completed
-        return 0;
+        return 0; // Completed normally.
     } else {
-        // Was cancelled during execution
-        blocking_operation->state->saved_errno = EINTR;
+        // Was cancelled during execution; errno already reflects the interruption.
+        blocking_operation->state.saved_errno = EINTR;
         return -1;
     }
 }
@@ -235,7 +250,7 @@ rb_fiber_scheduler_blocking_operation_execute(rb_fiber_scheduler_blocking_operat
 VALUE
 rb_fiber_scheduler_blocking_operation_new(void *(*function)(void *), void *data,
                                          rb_unblock_function_t *unblock_function, void *data2,
-                                         int flags, struct rb_fiber_scheduler_blocking_operation_state *state)
+                                         int flags)
 {
     VALUE self = blocking_operation_alloc(rb_cFiberSchedulerBlockingOperation);
     rb_fiber_scheduler_blocking_operation_t *blocking_operation = get_blocking_operation(self);
@@ -245,7 +260,6 @@ rb_fiber_scheduler_blocking_operation_new(void *(*function)(void *), void *data,
     blocking_operation->unblock_function = unblock_function;
     blocking_operation->data2 = data2;
     blocking_operation->flags = flags;
-    blocking_operation->state = state;
 
     return self;
 }
@@ -1100,17 +1114,48 @@ VALUE rb_fiber_scheduler_blocking_operation_wait(VALUE scheduler, void* (*functi
     }
 
     // Create a new BlockingOperation with the blocking operation
-    VALUE blocking_operation = rb_fiber_scheduler_blocking_operation_new(function, data, unblock_function, data2, flags, state);
+    VALUE blocking_operation = rb_fiber_scheduler_blocking_operation_new(function, data, unblock_function, data2, flags);
 
-    VALUE result = rb_funcall(scheduler, id_blocking_operation_wait, 1, blocking_operation);
+    VALUE result = Qundef;
+    enum ruby_tag_type tag_state;
+    rb_execution_context_t *ec = GET_EC();
 
-    // Get the operation data to check if it was executed
+    EC_PUSH_TAG(ec);
+    if ((tag_state = EC_EXEC_TAG()) == TAG_NONE) {
+        result = rb_funcall(scheduler, id_blocking_operation_wait, 1, blocking_operation);
+    }
+    EC_POP_TAG();
+
+    // The scheduler's blocking_operation_wait hook has returned (or raised).
+    //
+    // If the operation is still EXECUTING, the hook exited early — most likely
+    // due to an asynchronous interrupt (a signal or an exception raised into the
+    // scheduler fiber) that the scheduler could not prevent.  Cancel the operation
+    // so that any worker calling the unblock_function stops promptly.
+    //
+    // Safety: the scheduler is expected to hold the blocking_operation VALUE for
+    // the lifetime of the operation.  That keeps the embedded state alive even
+    // after we return, so any background thread that has not yet finished writing
+    // to blocking_operation->state is not writing into freed memory.  We do not
+    // copy the state in the non-COMPLETED paths, so the caller never reads a
+    // partial result.
     rb_fiber_scheduler_blocking_operation_t *operation = get_blocking_operation(blocking_operation);
     rb_atomic_t current_status = RUBY_ATOMIC_LOAD(operation->status);
 
-    // Invalidate the operation now that we're done with it
+    if (current_status == RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_EXECUTING) {
+        rb_fiber_scheduler_blocking_operation_cancel(operation);
+        current_status = RUBY_ATOMIC_LOAD(operation->status);
+    }
+
+    // Copy the result out before invalidating the operation, so the caller
+    // gets a stable snapshot regardless of what the scheduler does afterwards.
+    if (current_status == RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_COMPLETED && state) {
+        *state = operation->state;
+    }
+
+    // Invalidate the function pointer so the now-useless BlockingOperation VALUE
+    // held by the scheduler cannot be re-executed after this frame returns.
     operation->function = NULL;
-    operation->state = NULL;
     operation->data = NULL;
     operation->data2 = NULL;
     operation->unblock_function = NULL;
@@ -1118,7 +1163,14 @@ VALUE rb_fiber_scheduler_blocking_operation_wait(VALUE scheduler, void* (*functi
     // Ensure that the blocking operation remains visible until this point:
     RB_GC_GUARD(blocking_operation);
 
-    // If the blocking operation was never executed, return Qundef to signal the caller to use rb_nogvl instead
+    // Re-raise any exception from the hook now that the result has been copied
+    // and the operation invalidated.  Mirrors rb_ensure: cleanup first, then
+    // the exception propagates to the caller unchanged.
+    if (tag_state != TAG_NONE) {
+        EC_JUMP_TAG(ec, tag_state);
+    }
+
+    // Scheduler never touched the operation — fall back to rb_nogvl.
     if (current_status == RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_QUEUED) {
         return Qundef;
     }
@@ -1207,37 +1259,45 @@ rb_fiber_scheduler_blocking_operation_cancel(rb_fiber_scheduler_blocking_operati
         return -1;
     }
 
-    rb_atomic_t current_state = RUBY_ATOMIC_LOAD(blocking_operation->status);
+    // Retry loop: load → CAS.  If the CAS loses a race (state changed between
+    // load and CAS), reload and retry rather than falling through with a stale
+    // current_state value.
+    while (1) {
+        rb_atomic_t current_state = RUBY_ATOMIC_LOAD(blocking_operation->status);
 
-    switch (current_state) {
-        case RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_QUEUED:
-            // Work hasn't started - just mark as cancelled:
-            if (RUBY_ATOMIC_CAS(blocking_operation->status, current_state, RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_CANCELLED) == current_state) {
-                // Successfully cancelled before execution:
+        switch (current_state) {
+            case RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_QUEUED:
+                // Work hasn't started — try to mark cancelled.
+                if (RUBY_ATOMIC_CAS(blocking_operation->status, current_state,
+                                    RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_CANCELLED) == current_state) {
+                    return 0; // Cancelled before execution.
+                }
+                // State changed between load and CAS; retry.
+                continue;
+
+            case RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_EXECUTING:
+                // Work is running — mark cancelled AND call unblock function.
+                if (RUBY_ATOMIC_CAS(blocking_operation->status, current_state,
+                                    RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_CANCELLED) != current_state) {
+                    // State changed between load and CAS; retry.
+                    continue;
+                }
+                // Successfully marked cancelled; signal the blocked thread.
+                rb_unblock_function_t *unblock_function = blocking_operation->unblock_function;
+                if (unblock_function) {
+                    RUBY_ASSERT(unblock_function != (rb_unblock_function_t *)-1 &&
+                                "unblock_function is still sentinel value -1, should have been resolved earlier");
+                    unblock_function(blocking_operation->data2);
+                }
+                return 1; // Cancelled during execution (unblock function called).
+
+            case RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_COMPLETED:
+            case RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_CANCELLED:
+                // Already finished or cancelled.
                 return 0;
-            }
-            // Fall through if state changed between load and CAS
+        }
 
-        case RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_EXECUTING:
-            // Work is running - mark cancelled AND call unblock function
-            if (RUBY_ATOMIC_CAS(blocking_operation->status, current_state, RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_CANCELLED) != current_state) {
-                // State changed between load and CAS - operation may have completed:
-                return 0;
-            }
-            // Otherwise, we successfully marked it as cancelled, so we can call the unblock function:
-            rb_unblock_function_t *unblock_function = blocking_operation->unblock_function;
-            if (unblock_function) {
-                RUBY_ASSERT(unblock_function != (rb_unblock_function_t *)-1 && "unblock_function is still sentinel value -1, should have been resolved earlier");
-                blocking_operation->unblock_function(blocking_operation->data2);
-            }
-            // Cancelled during execution (unblock function called):
-            return 1;
-
-        case RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_COMPLETED:
-        case RB_FIBER_SCHEDULER_BLOCKING_OPERATION_STATUS_CANCELLED:
-            // Already finished or cancelled:
-            return 0;
+        // Unknown status — should not happen.
+        return -1;
     }
-
-    return 0;
 }
