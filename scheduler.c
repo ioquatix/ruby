@@ -1103,11 +1103,13 @@ rb_fiber_scheduler_address_resolve(VALUE scheduler, VALUE hostname)
  *  Minimal suggested implementation is:
  *
  *     def blocking_operation_wait(blocking_operation)
- *       Thread.new { blocking_operation.call }.join
+ *       Thread.new{blocking_operation.call}.join
  *     end
  */
 VALUE rb_fiber_scheduler_blocking_operation_wait(VALUE scheduler, void* (*function)(void *), void *data, rb_unblock_function_t *unblock_function, void *data2, int flags, struct rb_fiber_scheduler_blocking_operation_state *state)
 {
+    fprintf(stderr, "rb_fiber_scheduler_blocking_operation_wait: scheduler=%p, function=%p, data=%p, unblock_function=%p, data2=%p, flags=%d, state=%p\n", scheduler, function, data, unblock_function, data2, flags, state);
+
     // Check if scheduler supports blocking_operation_wait before creating the object
     if (!rb_respond_to(scheduler, id_blocking_operation_wait)) {
         return Qundef;
@@ -1117,12 +1119,16 @@ VALUE rb_fiber_scheduler_blocking_operation_wait(VALUE scheduler, void* (*functi
     VALUE blocking_operation = rb_fiber_scheduler_blocking_operation_new(function, data, unblock_function, data2, flags);
 
     VALUE result = Qundef;
-    enum ruby_tag_type tag_state;
+    enum ruby_tag_type state;
     rb_execution_context_t *ec = GET_EC();
 
+    rb_control_frame_t *volatile cfp = ec->cfp;
     EC_PUSH_TAG(ec);
-    if ((tag_state = EC_EXEC_TAG()) == TAG_NONE) {
+    if ((state = EC_EXEC_TAG()) == TAG_NONE) {
         result = rb_funcall(scheduler, id_blocking_operation_wait, 1, blocking_operation);
+    }
+    else {
+        rb_vm_rewind_cfp(ec, cfp);
     }
     EC_POP_TAG();
 
@@ -1139,6 +1145,7 @@ VALUE rb_fiber_scheduler_blocking_operation_wait(VALUE scheduler, void* (*functi
     // to blocking_operation->state is not writing into freed memory.  We do not
     // copy the state in the non-COMPLETED paths, so the caller never reads a
     // partial result.
+    fprintf(stderr, "rb_fiber_scheduler_blocking_operation_wait: blocking_operation=%p\n operation->status=%d\n state=%d\n", operation, current_status, state);
     rb_fiber_scheduler_blocking_operation_t *operation = get_blocking_operation(blocking_operation);
     rb_atomic_t current_status = RUBY_ATOMIC_LOAD(operation->status);
 
@@ -1166,8 +1173,8 @@ VALUE rb_fiber_scheduler_blocking_operation_wait(VALUE scheduler, void* (*functi
     // Re-raise any exception from the hook now that the result has been copied
     // and the operation invalidated.  Mirrors rb_ensure: cleanup first, then
     // the exception propagates to the caller unchanged.
-    if (tag_state != TAG_NONE) {
-        EC_JUMP_TAG(ec, tag_state);
+    if (state != TAG_NONE) {
+        EC_JUMP_TAG(ec, state);
     }
 
     // Scheduler never touched the operation — fall back to rb_nogvl.
